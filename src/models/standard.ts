@@ -53,7 +53,7 @@ export class StandardModel {
   getBudgetDetail(db: Knex, budgetYear: string, budgetTypeId: string, warehouseId: any) {
     return db('view_budget_subtype as vs')
       .select('vs.bgdetail_id', 'vs.view_bgdetail_id', 'vs.bg_year', 'vs.bgtype_id', 'vs.bgtype_name', 'vs.bgtypesub_id', 'vs.bgtypesub_name', 'vs.remark', 'vs.amount')
-      .join('bm_budget_detail_warehouse as bbdw', 'bbdw.view_bgdetail_id', 'vs.view_bgdetail_id')
+      .join('bm_budget_detail_warehouse as bbdw', 'bbdw.view_bgdetail_id', 'vs.bgdetail_id')
       .where('vs.bg_year', budgetYear)
       .andWhere('vs.bgtype_id', budgetTypeId)
       .andWhere('bbdw.warehouse_id', warehouseId)
