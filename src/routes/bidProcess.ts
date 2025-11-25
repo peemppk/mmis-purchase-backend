@@ -58,7 +58,8 @@ router.put('/:id', (req, res, next) => {
   if (id) {
     let datas: any = {
       name: data.name,
-      f_amount: data.f_amount
+      f_amount: data.f_amount,
+      buy_method_id: data.buy_method_id
     }
 
     model.update(db, id, datas)
@@ -99,6 +100,21 @@ router.put('/is-active/:id', (req, res, next) => {
   model.isActive(db, id)
     .then((results: any) => {
       res.send({ ok: true })
+    })
+    .catch(error => {
+      res.send({ ok: false, error: error })
+    })
+    .finally(() => {
+      db.destroy();
+    });
+});
+
+router.get('/buy-method', (req, res, next) => {
+  let db = req.db;
+
+  model.getBuyMethods(db)
+    .then((results: any) => {
+      res.send({ ok: true, detail: results })
     })
     .catch(error => {
       res.send({ ok: false, error: error })
