@@ -7,7 +7,9 @@ export class BidProcessModel {
   public primaryKey = 'id';
 
   list(knex: Knex, limit: number = 100, offset: number = 0) {
-    return knex(this.tableName)
+    return knex('l_bid_process as lbp')
+      .select('lbp.*', 'bbm.buy_method_name')
+      .leftJoin('bi_buy_method as bbm', 'lbp.buy_method_id', 'bbm.buy_method_id')
       .limit(limit)
       .offset(offset);
   }
@@ -42,6 +44,10 @@ export class BidProcessModel {
     return knex(this.tableName)
       .where(this.primaryKey, id)
       .del();
+  }
+
+  getBuyMethods(knex: Knex) {
+    return knex('bi_buy_method')
   }
 
 }
