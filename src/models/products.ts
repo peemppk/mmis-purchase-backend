@@ -45,53 +45,83 @@ export class ProductsModel {
   }
 
   getOrderProductListByGeneric(knex: Knex, warehouseId: any, genericId: any) {
-    let sql = `
-    select mp.generic_id, mp.working_code, mp.product_id, mp.product_name, 
-    IF(mp.purchase_cost IS NULL,IF(ug.cost IS NULL,0,ug.cost),mp.purchase_cost) as purchase_cost, mp.is_lot_control,
-    mp.primary_unit_id, mp.m_labeler_id, mp.v_labeler_id, mp.purchase_unit_id,
-    lm.labeler_name as m_labeler_name, lv.labeler_name as v_labeler_name,
-    u.unit_name as primary_unit_name, uf.unit_name as from_unit_name,
-    ut.unit_name as to_unit_name, ug.qty as conversion_qty, mp.purchase_unit_id as unit_generic_id,
-    (
-      select sum(wp.qty) as total from wm_products as wp where wp.product_id=mp.product_id
-      and wp.warehouse_id=?
-    ) as remain_qty, 
+    
+    // 1. Optimization: ดึงยอดคงเหลือ (Stock) เตรียมไว้แบบกลุ่ม (เร็วกว่า Subquery รายบรรทัด)
+    const stockQuery = knex('wm_products')
+        .select('product_id')
+        .sum('qty as total') // ผลรวม qty
+        .where('warehouse_id', warehouseId)
+        .groupBy('product_id')
+        .as('stock');
 
-    0 as order_qty, vcmp.contract_no, vcmp.contract_id,
-    (
-    	select po.order_date
-    	from pc_purchasing_order as po 
-    	inner join pc_purchasing_order_item as pi on pi.purchase_order_id=po.purchase_order_id
-    	where pi.product_id=mp.product_id
-    	order by po.order_date desc
-    	limit 1
-    ) as last_purchased_date,
-    (
-    	select pi.unit_price
-    	from pc_purchasing_order as po 
-    	inner join pc_purchasing_order_item as pi on pi.purchase_order_id=po.purchase_order_id
-    	where pi.product_id=mp.product_id
-    	order by po.order_date desc
-    	limit 1
-    ) as last_purchased_unit_price
-
-    from mm_products as mp
-    inner join mm_labelers as lm on lm.labeler_id=mp.m_labeler_id
-    inner join mm_labelers as lv on lv.labeler_id=mp.v_labeler_id
-    inner join mm_units as u on u.unit_id=mp.primary_unit_id
-    inner join mm_unit_generics as ug on ug.unit_generic_id=mp.purchase_unit_id
-    inner join mm_units as uf on uf.unit_id=ug.from_unit_id
-    inner join mm_units as ut on ut.unit_id=ug.to_unit_id
-    left join view_cm_products_active as vcmp on vcmp.product_id=mp.product_id and vcmp.contract_status='APPROVED'
-
-    where mp.generic_id=?
-
-    and mp.is_active='Y' and mp.mark_deleted='N'
-    group by mp.product_id
-    order by last_purchased_date desc
-    `;
-
-    return knex.raw(sql, [warehouseId, genericId]);
+    return knex('mm_products as mp')
+        .select(
+            'mp.generic_id', 
+            'mp.working_code', 
+            'mp.product_id', 
+            'mp.product_name',
+            // Purchase Cost Logic เดิม
+            knex.raw('IF(mp.purchase_cost IS NULL, IF(ug.cost IS NULL, 0, ug.cost), mp.purchase_cost) as purchase_cost'),
+            'mp.is_lot_control', 
+            'mp.primary_unit_id', 
+            'mp.m_labeler_id', 
+            'mp.v_labeler_id', 
+            'mp.purchase_unit_id',
+            'lm.labeler_name as m_labeler_name', 
+            'lv.labeler_name as v_labeler_name',
+            'u.unit_name as primary_unit_name', 
+            'uf.unit_name as from_unit_name',
+            'ut.unit_name as to_unit_name', 
+            'ug.qty as conversion_qty', 
+            'mp.purchase_unit_id as unit_generic_id',
+            
+            // [แก้ไข] ดึงค่าตรงๆ ไม่ต้องมี ifnull เพื่อให้ได้ค่า NULL เหมือน query เดิมหากไม่มีสต็อก
+            'stock.total as remain_qty', 
+            
+            knex.raw('0 as order_qty'), 
+            'vcmp.contract_no', 
+            'vcmp.contract_id',
+            
+            // [คงเดิม] ใช้ Raw Query สำหรับ Logic การดึงวันที่/ราคาล่าสุด เพื่อความถูกต้อง 100%
+            knex.raw(`(
+              select po.order_date
+              from pc_purchasing_order as po 
+              inner join pc_purchasing_order_item as pi on pi.purchase_order_id=po.purchase_order_id
+              where pi.product_id=mp.product_id
+              order by po.order_date desc
+              limit 1
+            ) as last_purchased_date`),
+            
+            knex.raw(`(
+              select pi.unit_price
+              from pc_purchasing_order as po 
+              inner join pc_purchasing_order_item as pi on pi.purchase_order_id=po.purchase_order_id
+              where pi.product_id=mp.product_id
+              order by po.order_date desc
+              limit 1
+            ) as last_purchased_unit_price`)
+        )
+        .innerJoin('mm_labelers as lm', 'lm.labeler_id', 'mp.m_labeler_id')
+        .innerJoin('mm_labelers as lv', 'lv.labeler_id', 'mp.v_labeler_id')
+        .innerJoin('mm_units as u', 'u.unit_id', 'mp.primary_unit_id')
+        .innerJoin('mm_unit_generics as ug', 'ug.unit_generic_id', 'mp.purchase_unit_id')
+        .innerJoin('mm_units as uf', 'uf.unit_id', 'ug.from_unit_id')
+        .innerJoin('mm_units as ut', 'ut.unit_id', 'ug.to_unit_id')
+        
+        // Join กับ Stock ที่เตรียมไว้ (จุดที่ทำให้เร็วขึ้น)
+        .leftJoin(stockQuery, 'stock.product_id', 'mp.product_id')
+        
+        // Join View Contract
+        .leftJoin('view_cm_products_active as vcmp', function() {
+            this.on('vcmp.product_id', 'mp.product_id')
+                .andOn(knex.raw("vcmp.contract_status = 'APPROVED'"));
+        })
+        
+        .where('mp.generic_id', genericId)
+        .where('mp.is_active', 'Y')
+        .where('mp.mark_deleted', 'N')
+        .groupBy('mp.product_id')
+        .orderBy('last_purchased_date', 'desc');
   }
 
   getOrderPoint(knex: Knex, warehouseId: any, query: string = '', genericTypeIds: string[], limit: number = 100, offset: number = 0) {
@@ -133,125 +163,52 @@ export class ProductsModel {
     con.limit(limit).offset(offset)
     return con;
   }
-  getReOrderPointGeneric(knex: Knex, warehouseId: any, genericTypeIds: string[], limit: number = 20, offset: number = 0, query: any = '', showNotPurchased: any = 'N', sort: any = {}) {
-    let subGenerics = knex('pc_product_reserved')
+  
+  async getReOrderPointGeneric(knex: Knex, warehouseId: any, genericTypeIds: string[], limit: number = 20, offset: number = 0, query: any = '', showNotPurchased: any = 'N', sort: any = {}) {
+    
+    // 1. Stock Subquery
+    const stockQuery = knex('view_product_reserve')
       .select('generic_id')
-      .whereIn('reserved_status', ['SELECTED', 'CONFIRMED']);
+      .sum('remain_qty as remain_qty')
+      .where('warehouse_id', warehouseId)
+      .groupBy('generic_id', 'warehouse_id')
+      .as('rq');
+
+    // 2. Reserved Subquery
+    const reservedQuery = knex('pc_product_reserved')
+      .select('generic_id')
+      .whereIn('reserved_status', ['SELECTED', 'CONFIRMED'])
+      .as('pcr');
+
     let sql = knex('mm_generics as mg')
-      .select(knex.raw(`mg.generic_id,mg.working_code,mg.generic_name,mg.min_qty,mg.max_qty,ifnull(mgp.safety_max_day,'-') safety_max_day ,ifnull(mgp.safety_min_day,'-') safety_min_day,sum(rq.remain_qty) remain_qty,'' issue_qty,
-    ifnull( pur.total, 0 ) AS total_purchased ,mgt.generic_type_name`))
-      .joinRaw(`left JOIN (select generic_id,sum(remain_qty) remain_qty from view_product_reserve where warehouse_id = ${warehouseId} group by generic_id, warehouse_id) AS rq ON rq.generic_id = mg.generic_id `)
-      .leftJoin('view_purchasing_total_remain as pur', 'pur.generic_id', 'mg.generic_id')
-      .leftJoin(knex.raw(`mm_generic_planning as mgp on mgp.generic_id = mg.generic_id and mgp.warehouse_id = ${warehouseId} and mgp.is_active = 'Y'`))
-      .leftJoin('mm_generic_types as mgt','mgt.generic_type_id','mg.generic_type_id')
-      .whereRaw('mg.mark_deleted="N"')
-      .whereRaw('mg.is_active="Y"')
-      .whereNotIn('mg.generic_id', subGenerics);
-
-    if (genericTypeIds.length) {
-      sql.whereIn('mg.generic_type_id', genericTypeIds);
-    }
-
-    if (query) {
-      let _query = `${query}%`;
-      let _queryAll = `%${query}%`;
-      sql.where(w => {
-        w.where('mg.generic_name', 'like', _query)
-          .orWhere('mg.generic_name', 'like', _queryAll)
-          .orWhere('mg.working_code', 'like', _query)
-          .orWhere('mg.keywords', 'like', _queryAll)
-      })
-    }
-
-    if (showNotPurchased === 'N') {
-      sql.havingRaw('remain_qty<=mg.min_qty');
-    } else {
-      sql.havingRaw('(remain_qty<=mg.min_qty OR remain_qty is NULL)');
-    }
-    sql.havingRaw('(total_purchased >= 0  or total_purchased is null)')
-
-    if (sort.by) {
-      let reverse = sort.reverse ? 'DESC' : 'ASC';
-      if (sort.by === 'generic_name') {
-        sql.orderBy('mg.generic_name', reverse);
-      }
-      if (sort.by === 'generic_type_name') {
-        sql.orderBy('gt.generic_type_name', reverse);
-      }
-    } else {
-      sql.orderByRaw('mg.generic_name');
-    }
-
-    return sql.groupBy('mg.working_code').limit(limit)
-      .offset(offset);
-
-  }
-
-  _getReOrderPointGeneric(knex: Knex, warehouseId: any, genericTypeIds: string[], limit: number = 20, offset: number = 0, query: any = '', showNotPurchased: any = 'N', sort: any = {}) {
-
-    let subQuery = knex('wm_products as wp')
-      .select(knex.raw('sum(wp.qty)'))
-      .innerJoin('mm_products as mp', 'mp.product_id', 'wp.product_id')
-      .where('wp.warehouse_id', warehouseId)
-      .whereRaw('wp.product_id=mp.product_id')
-      .whereRaw('mp.generic_id=mg.generic_id')
-      .as('remain_qty');
-
-    let subGenerics = knex('pc_product_reserved')
-      .select('generic_id')
-      .whereIn('reserved_status', ['SELECTED', 'CONFIRMED']);
-    let subQtyReceive = knex.raw(`
-      (SELECT
-        rp.purchase_order_id,
-        rd.product_id,
-        sum( rd.receive_qty * ug.qty ) total_qty 
-      FROM
-        wm_receives AS rp
-        left JOIN wm_receive_approve AS ra ON ra.receive_id = rp.receive_id
-        INNER JOIN wm_receive_detail AS rd ON rp.receive_id = rd.receive_id 
-        INNER JOIN mm_unit_generics AS ug ON ug.unit_generic_id = rd.unit_generic_id	
-			WHERE  ra.approve_id IS NULL
-      GROUP BY
-        rp.purchase_order_id,
-        rd.product_id ) AS rq
-       `)
-    let subQtyReceive2 = knex.raw(`
-      (SELECT
-        rp.purchase_order_id,
-        rd.product_id,
-        sum( rd.receive_qty * ug.qty ) total_qty 
-      FROM
-        wm_receives AS rp
-        INNER JOIN wm_receive_approve AS ra ON ra.receive_id = rp.receive_id
-        INNER JOIN wm_receive_detail AS rd ON rp.receive_id = rd.receive_id 
-        INNER JOIN mm_unit_generics AS ug ON ug.unit_generic_id = rd.unit_generic_id	
-      GROUP BY
-        rp.purchase_order_id,
-        rd.product_id ) AS rq2
-       `)
-    let subQueryPurchased = knex('pc_purchasing_order_item as pci')
       .select(knex.raw(`
-      sum( if(pco.purchase_order_status = 'COMPLETED', ifnull( rq.total_qty, 0 ), (pci.qty * ug.qty) - ifnull( rq2.total_qty, 0 ) ) ) AS total_qty
+        mg.generic_id,
+        mg.working_code,
+        mg.generic_name,
+        mg.min_qty,
+        mg.max_qty,
+        ifnull(mgp.safety_max_day,'-') safety_max_day,
+        ifnull(mgp.safety_min_day,'-') safety_min_day,
+        sum(rq.remain_qty) remain_qty,
+        '' issue_qty,
+        ifnull( pur.total, 0 ) AS total_purchased,
+        mgt.generic_type_name
       `))
-      .innerJoin('pc_purchasing_order as pco', 'pco.purchase_order_id', 'pci.purchase_order_id')
-      .leftJoin(subQtyReceive, knex.raw(` rq.purchase_order_id = pco.purchase_order_id AND rq.product_id = pci.product_id `))
-      .leftJoin(subQtyReceive2, knex.raw(` rq2.purchase_order_id = pco.purchase_order_id AND rq2.product_id = pci.product_id `))
-      .innerJoin('mm_unit_generics as ug', 'ug.unit_generic_id', 'pci.unit_generic_id')
-      .innerJoin('mm_products as mp', 'mp.product_id', 'pci.product_id')
-      .whereIn('pco.purchase_order_status', ['ORDERPOINT', 'PREPARED', 'CONFIRMED', 'APPROVED', 'COMPLETED'])
-      .whereRaw('pco.is_cancel="N"')
-      .whereRaw('mp.generic_id=mg.generic_id')
-      .whereRaw('pci.product_id=mp.product_id')
-      .as('total_purchased');
-
-    let sql = knex('mm_generics as mg')
-      .select(subQuery, 'mg.generic_id', 'mg.generic_name', 'gt.generic_type_name',
-        'mg.min_qty', 'mg.max_qty', 'mg.working_code', subQueryPurchased, 'mp.product_id')
-      .innerJoin('mm_generic_types as gt', 'gt.generic_type_id', 'mg.generic_type_id')
-      .join('mm_products as mp', 'mp.generic_id', 'mg.generic_id')
-      .whereRaw('mg.mark_deleted="N"')
-      .whereRaw('mg.is_active="Y"')
-      .whereNotIn('mg.generic_id', subGenerics);
+      .leftJoin(stockQuery, 'rq.generic_id', 'mg.generic_id')
+      .leftJoin('view_purchasing_total_remain as pur', 'pur.generic_id', 'mg.generic_id')
+      
+      // [FIXED] ใช้ .on() แบบดั้งเดิมแทน .andOnVal()
+      .leftJoin('mm_generic_planning as mgp', function () {
+        this.on('mgp.generic_id', 'mg.generic_id')
+          .on('mgp.warehouse_id', knex.raw('?', [warehouseId])) // ใช้ ? binding
+          .on('mgp.is_active', knex.raw("'Y'")); // ใส่ 'Y' ใน raw string
+      })
+      
+      .leftJoin('mm_generic_types as mgt', 'mgt.generic_type_id', 'mg.generic_type_id')
+      .leftJoin(reservedQuery, 'pcr.generic_id', 'mg.generic_id')
+      .whereNull('pcr.generic_id')
+      .where('mg.mark_deleted', 'N')
+      .where('mg.is_active', 'Y');
 
     if (genericTypeIds.length) {
       sql.whereIn('mg.generic_type_id', genericTypeIds);
@@ -269,11 +226,11 @@ export class ProductsModel {
     }
 
     if (showNotPurchased === 'N') {
-      sql.havingRaw('remain_qty<=mg.min_qty');
+      sql.havingRaw('remain_qty <= mg.min_qty');
     } else {
-      sql.havingRaw('(remain_qty<=mg.min_qty OR remain_qty is NULL)');
+      sql.havingRaw('(remain_qty <= mg.min_qty OR remain_qty is NULL)');
     }
-    sql.havingRaw('(total_purchased >= 0  or total_purchased is null)')
+    sql.havingRaw('(total_purchased >= 0 or total_purchased is null)');
 
     if (sort.by) {
       let reverse = sort.reverse ? 'DESC' : 'ASC';
@@ -281,30 +238,52 @@ export class ProductsModel {
         sql.orderBy('mg.generic_name', reverse);
       }
       if (sort.by === 'generic_type_name') {
-        sql.orderBy('gt.generic_type_name', reverse);
+        sql.orderBy('mgt.generic_type_name', reverse);
       }
     } else {
       sql.orderByRaw('mg.generic_name');
     }
 
-    return sql.groupBy('mg.working_code').limit(limit)
+    return sql.groupBy('mg.working_code')
+      .limit(limit)
       .offset(offset);
-
   }
 
-  getReOrderPointGenericTotal(knex: Knex, warehouseId: any, genericTypeIds: string[], query: any = '', showNotPurchased: any = 'N') {
+  async getReOrderPointGenericTotal(knex: Knex, warehouseId: any, genericTypeIds: string[], query: any = '', showNotPurchased: any = 'N') {
 
-    let subGenerics = knex('pc_product_reserved')
+    const stockQuery = knex('view_product_reserve')
       .select('generic_id')
-      .whereIn('reserved_status', ['SELECTED', 'CONFIRMED']);
+      .sum('remain_qty as remain_qty')
+      .where('warehouse_id', warehouseId)
+      .groupBy('generic_id', 'warehouse_id')
+      .as('rq');
+
+    const reservedQuery = knex('pc_product_reserved')
+      .select('generic_id')
+      .whereIn('reserved_status', ['SELECTED', 'CONFIRMED'])
+      .as('pcr');
+
     let sql = knex('mm_generics as mg')
-      .select(knex.raw(`mg.generic_id,mg.working_code,mg.generic_name,mg.min_qty,mg.max_qty,sum(rq.remain_qty) remain_qty,
-    ifnull( pur.total, 0 ) AS total_purchased `))
-      .joinRaw(`left JOIN view_product_reserve AS rq ON rq.generic_id = mg.generic_id and rq.warehouse_id = ${warehouseId}`)
+      .select(knex.raw(`
+        mg.working_code, 
+        mg.min_qty,
+        sum(rq.remain_qty) as remain_qty,
+        ifnull(pur.total, 0) AS total_purchased
+      `))
+      .leftJoin(stockQuery, 'rq.generic_id', 'mg.generic_id')
       .leftJoin('view_purchasing_total_remain as pur', 'pur.generic_id', 'mg.generic_id')
-      .whereRaw('mg.mark_deleted="N"')
-      .whereRaw('mg.is_active="Y"')
-      .whereNotIn('mg.generic_id', subGenerics);
+      
+      // [FIXED] ใช้ .on() แบบดั้งเดิมแทน .andOnVal()
+      .leftJoin('mm_generic_planning as mgp', function () {
+        this.on('mgp.generic_id', 'mg.generic_id')
+          .on('mgp.warehouse_id', knex.raw('?', [warehouseId]))
+          .on('mgp.is_active', knex.raw("'Y'"));
+      })
+
+      .leftJoin(reservedQuery, 'pcr.generic_id', 'mg.generic_id')
+      .whereNull('pcr.generic_id')
+      .where('mg.mark_deleted', 'N')
+      .where('mg.is_active', 'Y');
 
     if (genericTypeIds.length) {
       sql.whereIn('mg.generic_type_id', genericTypeIds);
@@ -322,12 +301,15 @@ export class ProductsModel {
     }
 
     if (showNotPurchased === 'N') {
-      sql.havingRaw('remain_qty<=mg.min_qty');
+      sql.havingRaw('remain_qty <= mg.min_qty');
     } else {
-      sql.havingRaw('(remain_qty<=mg.min_qty OR remain_qty is NULL)');
+      sql.havingRaw('(remain_qty <= mg.min_qty OR remain_qty is NULL)');
     }
-    sql.havingRaw('(total_purchased >= 0  or total_purchased is null)')
-    return sql.groupBy('mg.working_code')
+    sql.havingRaw('(total_purchased >= 0 or total_purchased is null)');
+
+    sql.groupBy('mg.working_code');
+    
+    return knex.from(sql.as('total_query')).count('* as total');
   }
 
   getReOrderPointTradeReserved(knex: Knex, warehouseId: any, genericTypeIds: string[], limit: number = 20, offset: number = 0, query: any = '', sort: any = {}) {
