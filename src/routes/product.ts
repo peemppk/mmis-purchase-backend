@@ -39,7 +39,7 @@ router.post('/reorderpoint/generic', async (req, res, next) => {
   try {
     let rs: any = await model.getReOrderPointGeneric(db, warehouseId, genericTypeId, limit, offset, query, showNotPurchased, sort);
     let rsTotal: any = await model.getReOrderPointGenericTotal(db, warehouseId, genericTypeId, query, showNotPurchased);
-    res.send({ ok: true, rows: rs, total: rsTotal.length });
+    res.send({ ok: true, rows: rs, total: rsTotal[0].total });
   } catch (error) {
     res.send({ ok: false, error: error.message });
   } finally {
@@ -200,8 +200,8 @@ router.get('/orderspoint/product-list-by-generic/:genericId', async (req, res, n
   let warehouseId = req.decoded.warehouseId;
 
   try {
-    let rs: any = await model.getOrderProductListByGeneric(db, warehouseId, genericId);
-    res.send({ ok: true, rows: rs[0] });
+    let rs: any = await model.getOrderProductListByGeneric(db, warehouseId, genericId);    
+    res.send({ ok: true, rows: rs });
   } catch (error) {
     res.send({ ok: false, error: error.message });
   } finally {
