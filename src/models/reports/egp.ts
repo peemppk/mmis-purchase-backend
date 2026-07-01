@@ -27,6 +27,8 @@ export class EgpModel {
                 'po.manager_id',
                 'po.head_id',
                 'po.comment',
+                'po.egp_id',
+                'po.vendor_contact_name',
                 'vb.amount as budget_amount',
                 'vb.bgtype_name as budget_type_name',
                 'vb.remark as budget_remark',
