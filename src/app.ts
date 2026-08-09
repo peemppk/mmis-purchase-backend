@@ -18,7 +18,6 @@ import { Jwt } from './models/jwt';
 const jwt = new Jwt();
 
 import indexRoute from './routes/index';
-import loginRoute from './routes/login';
 
 import peopleRoute from './routes/people';
 import committeeRoute from './routes/committee';
@@ -131,7 +130,8 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use('/login', loginRoute);
+// /login ถูกถอดออกแล้ว — เดิมตอบกลับว่า "กรุณา login ผ่าน login portal" อยู่แล้ว
+// การเข้าสู่ระบบทั้งหมดต้องผ่าน mmis-management-backend (/api/um/login) ที่เดียว
 
 app.use('/users', checkAuth, userRoute);
 app.use('/people', checkAuth, peopleRoute);
