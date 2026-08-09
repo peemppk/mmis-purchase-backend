@@ -31,10 +31,14 @@ export class PurchasingOrderModel {
     return true;
   }
 
-  checkApprove(knex: Knex, username: any, password: any, action: any) {
+  /**
+   * ดึงผู้อนุมัติตาม username โดยไม่กรองด้วยรหัสผ่านใน SQL
+   * (bcrypt เทียบใน SQL ไม่ได้ — ดูคำอธิบายใน models/password.ts)
+   * การตรวจสิทธิ์ (access_right) ยังทำที่ route เหมือนเดิม
+   */
+  findApprover(knex: Knex, username: any) {
     return knex('um_users as uu')
       .andWhere('uu.username', username)
-      .andWhere('uu.password', password)
   }
 
   getLastOrderByLabeler(knex: Knex, labeler_id: string) {

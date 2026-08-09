@@ -3,6 +3,7 @@
 import * as express from 'express';
 import * as moment from 'moment';
 import { PurchasingOrderModel } from '../models/purchasingOrder';
+import { PasswordModel } from '../models/password';
 import { PurchasingOrderItemModel } from '../models/purchasingOrderItem'
 import util = require('util')
 import { SerialModel } from '../models/serial';
@@ -14,6 +15,7 @@ import { ProductsModel } from '../models/products';
 const serialModel = new SerialModel();
 const router = express.Router();
 const model = new PurchasingOrderModel();
+const passwordModel = new PasswordModel();
 const modelItems = new PurchasingOrderItemModel();
 const periodModel = new PeriodModel();
 const bgModel = new BudgetTransectionModel();
@@ -700,9 +702,15 @@ router.post('/checkApprove', async (req, res, next) => {
     let username = req.body.username;
     let password = req.body.password;
     let action = req.body.action;
-    password = crypto.createHash('md5').update(password).digest('hex');
-    const isCheck = await model.checkApprove(db, username, password, action);
 
+    // ดึงผู้อนุมัติมาก่อนแล้วเทียบรหัสผ่านใน node เพราะ bcrypt เทียบใน SQL ไม่ได้
+    // รองรับทั้งบัญชีที่ยังเป็น md5 และที่ย้ายมาเป็น bcrypt แล้ว
+    const isCheck: any = await model.findApprover(db, username);
+
+    if (!isCheck.length || !passwordModel.verify(password, isCheck[0].password)) {
+      res.send({ ok: false });
+      return;
+    }
 
     let rights = isCheck[0].access_right.split(',');
     if (_.indexOf(rights, action) > -1) {
